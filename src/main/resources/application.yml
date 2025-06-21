@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: spring-boot-app
+  datasource:
+    url: jdbc:postgresql://postgres:5432/keycloak
+    username: keycloak
+    password: keycloak
+    driver-class-name: org.postgresql.Driver
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://keycloak:8080/realms/demo
+
+server:
+  port: 8081
+
+keycloak:
+  jwk-set-uri: http://keycloak:8080/realms/demo/protocol/openid-connect/certs
+  server-url: http://keycloak:8080
+  realm: demo
+  admin-client-id: admin-client
+  admin-client-secret: admin-secret
