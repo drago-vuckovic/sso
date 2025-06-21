@@ -1,25 +1,37 @@
 package co.vuckovic.demo.security;
 
+import org.keycloak.OAuth2Constants;
+import org.keycloak.admin.client.Keycloak;
+import org.keycloak.admin.client.KeycloakBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.expression.WebExpressionAuthorizationManager;
 
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Map;
+import java.util.List;
 import java.util.stream.Collectors;
 
 @Configuration
 public class KeycloakConfig {
 
-    @Value("${keycloak.jwk-set-uri}")
-    private String JWK_SET_URI;
+    @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}")
+    private String jwkSetUri;
+
+    @Value("${keycloak.server-url}")
+    private String serverUrl;
+
+    @Value("${keycloak.realm}")
+    private String realm;
+
+    @Value("${keycloak.admin-user}")
+    private String adminUser;
+
+    @Value("${keycloak.admin-password}")
+    private String adminPassword;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -27,46 +39,43 @@ public class KeycloakConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/users").hasRole("USER")
                         .requestMatchers("/api/edit").hasRole("EDITOR")
-                        .requestMatchers("/api/admin").hasRole("ADMIN")
+                        .requestMatchers("/api/admin/**")
+                        .access(new WebExpressionAuthorizationManager(
+                                "hasRole('ADMIN') or hasAuthority('ROLE_manage-users')"
+                        ))
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> jwt
-                                .decoder(jwtDecoder())
+                                .decoder(org.springframework.security.oauth2.jwt.NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build())
                                 .jwtAuthenticationConverter(jwtAuthenticationConverter())
                         )
                 );
-
         return http.build();
     }
 
     @Bean
-    public JwtDecoder jwtDecoder() {
-        return NimbusJwtDecoder.withJwkSetUri(JWK_SET_URI).build();
+    public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtAuthenticationConverter conv = new JwtAuthenticationConverter();
+        conv.setJwtGrantedAuthoritiesConverter(jwt -> {
+            List<String> roles = jwt.getClaimAsStringList("roles");
+            if (roles == null) return List.of();
+            return roles.stream()
+                    .map(r -> new SimpleGrantedAuthority("ROLE_" + r))
+                    .collect(Collectors.toList());
+        });
+        return conv;
     }
 
     @Bean
-    public JwtAuthenticationConverter jwtAuthenticationConverter() {
-        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
-        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
-            Map<String, Object> realmAccess = jwt.getClaim("realm_access");
-            if (realmAccess == null) {
-                return Collections.emptyList();
-            }
-
-            Collection<String> roles = (Collection<String>) realmAccess.get("roles");
-            if (roles == null) {
-                return Collections.emptyList();
-            }
-
-            return roles.stream()
-                    .map(role -> "ROLE_" + role)
-                    .map(SimpleGrantedAuthority::new)
-                    .collect(Collectors.toList());
-        });
-        return converter;
+    public Keycloak keycloakAdmin() {
+        return KeycloakBuilder.builder()
+                .serverUrl(serverUrl)
+                .realm("master")
+                .grantType(OAuth2Constants.PASSWORD)
+                .clientId("admin-cli")
+                .username(adminUser)
+                .password(adminPassword)
+                .build();
     }
 }
-
-
-
