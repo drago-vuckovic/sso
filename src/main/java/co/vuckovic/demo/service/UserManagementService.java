@@ -1,162 +1,154 @@
 package co.vuckovic.demo.service;
 
+import co.vuckovic.demo.config.KeycloakProperties;
 import co.vuckovic.demo.dto.UserCreateRequest;
 import co.vuckovic.demo.dto.UserResponse;
+import co.vuckovic.demo.dto.UserSummary;
 import co.vuckovic.demo.dto.UserUpdateRequest;
-import jakarta.ws.rs.core.Response;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.keycloak.admin.client.Keycloak;
-import org.keycloak.admin.client.resource.UserResource;
-import org.keycloak.admin.client.resource.UsersResource;
-import org.keycloak.representations.idm.CredentialRepresentation;
-import org.keycloak.representations.idm.RoleRepresentation;
-import org.keycloak.representations.idm.UserRepresentation;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.util.UriComponentsBuilder;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
-import javax.ws.rs.core.Response.Status;
-import java.util.Collections;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
 
-@Slf4j
+import static org.springframework.http.HttpMethod.GET;
+
 @Service
 @RequiredArgsConstructor
 public class UserManagementService {
 
-    private final Keycloak keycloak;
+    private final WebClient keycloakWebClient;
+    private final KeycloakProperties props;
 
-    @Value("${keycloak.realm}")
-    private String realm;
-
-    public List<UserResponse> getAllUsers() {
-        return getAllUsers(0, 100);
+    public Flux<UserSummary> getAllUsers() {
+        return keycloakWebClient.get()
+                .uri("/admin/realms/{realm}/users", props.realm())
+                .retrieve()
+                .bodyToFlux(UserRep.class)
+                .map(u -> new UserSummary(u.id(), u.username()));
     }
 
-    public List<UserResponse> getAllUsers(int first, int max) {
-        return keycloak
-                .realm(realm)
-                .users()
-                .list(first, max)
-                .stream()
-                .map(this::mapToUserResponse)
-                .collect(Collectors.toList());
+    public Mono<UserResponse> getUserById(String userId) {
+        return keycloakWebClient.get()
+                .uri("/admin/realms/{realm}/users/{id}", props.realm(), userId)
+                .retrieve()
+                .bodyToMono(UserRep.class)
+                .flatMap(u -> fetchRolesForUser(userId)
+                        .collectList()
+                        .map(roles -> new UserResponse(u.id(), u.username(), u.email(), u.enabled(), roles))
+                );
     }
 
-    public UserResponse getUserById(String userId) {
-        UserRepresentation user = keycloak
-                .realm(realm)
-                .users()
-                .get(userId)
-                .toRepresentation();
-        return mapToUserResponse(user);
+    public Mono<String> createUser(UserCreateRequest req) {
+        return keycloakWebClient.post()
+                .uri("/admin/realms/{realm}/users", props.realm())
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(Map.of(
+                        "username", req.username(),
+                        "email", req.email(),
+                        "enabled", true,
+                        "credentials", List.of(Map.of(
+                                "type", "password",
+                                "value", req.password(),
+                                "temporary", false
+                        ))
+                ))
+                .exchangeToMono(resp -> {
+                    if (resp.statusCode().is2xxSuccessful()) {
+                        return Mono.justOrEmpty(resp.headers()
+                                .header("Location")
+                                .stream()
+                                .findFirst()
+                                .map(loc -> loc.substring(loc.lastIndexOf('/') + 1)));
+                    } else {
+                        return resp.createException().flatMap(Mono::error);
+                    }
+                });
     }
 
-    public String createUser(UserCreateRequest request) {
-        UserRepresentation user = new UserRepresentation();
-        user.setUsername(request.username());
-        user.setEmail(request.email());
-        user.setEnabled(true);
-        user.setEmailVerified(true);
+    public Mono<Void> updateUser(String userId, UserUpdateRequest req) {
+        return keycloakWebClient.get()
+                .uri("/admin/realms/{realm}/users/{id}", props.realm(), userId)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .flatMap(body -> {
+                    if (req.username() != null) body.put("username", req.username());
+                    if (req.email() != null) body.put("email", req.email());
+                    if (req.enabled() != null) body.put("enabled", req.enabled());
 
-        CredentialRepresentation cred = new CredentialRepresentation();
-        cred.setType(CredentialRepresentation.PASSWORD);
-        cred.setValue(request.password());
-        cred.setTemporary(false);
-        user.setCredentials(Collections.singletonList(cred));
+                    body.putIfAbsent("emailVerified", true); // optional but sometimes required
+                    body.putIfAbsent("attributes", new HashMap<>()); // required in some setups
 
-        Response resp = keycloak.realm(realm).users().create(user);
-        try {
-            if (resp.getStatus() != Status.CREATED.getStatusCode()) {
-                String err = resp.readEntity(String.class);
-                log.error("Keycloak createUser failed: HTTP {} — {}", resp.getStatus(), err);
-                throw new RuntimeException("Failed to create user (see logs)");
-            }
-            String path   = resp.getLocation().getPath();
-            String userId = path.substring(path.lastIndexOf('/') + 1);
+                    Mono<Void> updateMono = keycloakWebClient.put()
+                            .uri("/admin/realms/{realm}/users/{id}", props.realm(), userId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .bodyValue(body)
+                            .exchangeToMono(resp -> {
+                                if (resp.statusCode().is2xxSuccessful()) {
+                                    return Mono.empty();
+                                } else {
+                                    return resp.bodyToMono(String.class)
+                                            .flatMap(error -> Mono.error(new RuntimeException("Update failed: " + error)));
+                                }
+                            });
 
-            if (request.roles() != null && !request.roles().isEmpty()) {
-                assignRoles(userId, request.roles());
-            }
-            log.info("Created user '{}' (ID={})", request.username(), userId);
-            return userId;
-        } finally {
-            resp.close();
-        }
+                    if (req.roles() != null) {
+                        return updateMono.then(updateUserRoles(userId, req.roles()));
+                    } else {
+                        return updateMono;
+                    }
+                });
     }
 
-    public void updateUser(String userId, UserUpdateRequest request) {
-        UserResource ur = keycloak.realm(realm).users().get(userId);
-        UserRepresentation existing = ur.toRepresentation();
-
-        if (request.username() != null) existing.setUsername(request.username());
-        if (request.email()    != null) existing.setEmail(request.email());
-        if (request.enabled()  != null) existing.setEnabled(request.enabled());
-
-        ur.update(existing);
-        log.info("Updated user '{}'", userId);
-
-        if (request.roles() != null) {
-            updateRoles(userId, request.roles());
-            log.info("Updated roles for user '{}': {}", userId, request.roles());
-        }
+    public Mono<Void> deleteUser(String userId) {
+        return keycloakWebClient.delete()
+                .uri("/admin/realms/{realm}/users/{id}", props.realm(), userId)
+                .retrieve()
+                .bodyToMono(Void.class);
     }
 
-    public void deleteUser(String userId) {
-        keycloak.realm(realm).users().delete(userId);
-        log.info("Deleted user '{}'", userId);
+    private Flux<String> fetchRolesForUser(String userId) {
+        return keycloakWebClient.get()
+                .uri("/admin/realms/{realm}/users/{id}/role-mappings/realm/composite", props.realm(), userId)
+                .retrieve()
+                .bodyToFlux(Map.class)
+                .map(m -> (String) m.get("name"));
     }
 
-    private void assignRoles(String userId, List<String> roles) {
-        UsersResource users = keycloak.realm(realm).users();
-        List<RoleRepresentation> reps = roles.stream()
-                .map(rn -> keycloak.realm(realm).roles().get(rn).toRepresentation())
-                .collect(Collectors.toList());
-        users.get(userId).roles().realmLevel().add(reps);
+    private Mono<Void> updateUserRoles(String userId, List<String> newRoles) {
+        ParameterizedTypeReference<Map<String, Object>> type = new ParameterizedTypeReference<>() {};
+
+        Mono<List<Map<String, Object>>> repsMono = keycloakWebClient.get()
+                .uri("/admin/realms/{realm}/roles", props.realm())
+                .retrieve()
+                .bodyToFlux(type)
+                .filter(m -> newRoles.contains(m.get("name")))
+                .collectList();
+
+        Mono<Void> deleteMono = keycloakWebClient.delete()
+                .uri("/admin/realms/{realm}/users/{id}/role-mappings/realm", props.realm(), userId)
+                .retrieve()
+                .bodyToMono(Void.class);
+
+        Mono<Void> addMono = repsMono.flatMapMany(reps -> keycloakWebClient.post()
+                        .uri("/admin/realms/{realm}/users/{id}/role-mappings/realm", props.realm(), userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(reps)
+                        .retrieve()
+                        .bodyToFlux(Void.class))
+                .then();
+
+        return deleteMono.then(addMono);
     }
 
-    private void updateRoles(String userId, List<String> newRoles) {
-        UserResource ur = keycloak.realm(realm).users().get(userId);
-
-        List<RoleRepresentation> currentlyAssigned = ur.roles().realmLevel().listAll();
-        List<RoleRepresentation> toRemove = currentlyAssigned.stream()
-                .filter(r -> newRoles.contains(r.getName()))
-                .collect(Collectors.toList());
-        if (!toRemove.isEmpty()) {
-            ur.roles().realmLevel().remove(toRemove);
-        }
-
-        List<RoleRepresentation> allRoles = keycloak.realm(realm).roles().list();
-        List<RoleRepresentation> toAdd = newRoles.stream()
-                .filter(name -> currentlyAssigned.stream().noneMatch(r -> r.getName().equals(name)))
-                .map(name -> allRoles.stream()
-                        .filter(r -> r.getName().equals(name))
-                        .findFirst()
-                        .orElseThrow(() -> new RuntimeException("Role not found: " + name)))
-                .collect(Collectors.toList());
-        if (!toAdd.isEmpty()) {
-            ur.roles().realmLevel().add(toAdd);
-        }
-    }
-
-    private UserResponse mapToUserResponse(UserRepresentation user) {
-        List<String> roles = keycloak.realm(realm)
-                .users()
-                .get(user.getId())
-                .roles()
-                .realmLevel()
-                .listAll()
-                .stream()
-                .map(RoleRepresentation::getName)
-                .collect(Collectors.toList());
-
-        return new UserResponse(
-                user.getId(),
-                user.getUsername(),
-                user.getEmail(),
-                user.isEnabled(),
-                roles
-        );
-    }
+    private static record UserRep(String id, String username, String email, Boolean enabled) {}
 }

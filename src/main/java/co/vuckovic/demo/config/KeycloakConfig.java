@@ -1,4 +1,4 @@
-package co.vuckovic.demo.security;
+package co.vuckovic.demo.config;
 
 import org.keycloak.OAuth2Constants;
 import org.keycloak.admin.client.Keycloak;
@@ -23,9 +23,6 @@ public class KeycloakConfig {
 
     @Value("${keycloak.server-url}")
     private String serverUrl;
-
-    @Value("${keycloak.realm}")
-    private String realm;
 
     @Value("${keycloak.admin-user}")
     private String adminUser;

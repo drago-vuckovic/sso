@@ -28,6 +28,8 @@ keycloak:
   admin-client-secret: admin-secret
   admin-user: admin            # the master-realm admin user
   admin-password: admin
+  master-realm: master         # realm where admin-cli lives
+  master-client-id: admin-cli  # built-in client for master realm
 
 logging:
   level:
