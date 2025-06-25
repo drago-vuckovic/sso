@@ -18,6 +18,17 @@ spring:
            jwk-set-uri: http://keycloak:8080/realms/demo/protocol/openid-connect/certs
 #          issuer-uri: http://keycloak:8080/realms/demo
 
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+    path: /swagger-ui.html
+    display-request-duration: true
+    tags-sorter: alpha
+  enable-hateoas: false
+  enable-data-rest: false
+
 server:
   port: 8081
 
