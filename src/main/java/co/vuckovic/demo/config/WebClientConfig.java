@@ -17,14 +17,16 @@ public class WebClientConfig {
 
     @Bean
     public WebClient keycloakWebClient(WebClient.Builder builder) {
+        ExchangeFilterFunction authFilter = ExchangeFilterFunction.ofRequestProcessor(req ->
+                tokenProvider.getToken()
+                        .map(t -> ClientRequest.from(req)
+                                .headers(h -> h.setBearerAuth(t))
+                                .build())
+        );
+
         return builder
                 .baseUrl(props.serverUrl())
-                .filter(ExchangeFilterFunction.ofRequestProcessor(req ->
-                        tokenProvider.getToken()
-                                .map(token -> ClientRequest.from(req)
-                                        .headers(h -> h.setBearerAuth(token))
-                                        .build())
-                ))
+                .filter(authFilter)
                 .build();
     }
 }

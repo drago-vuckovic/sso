@@ -24,8 +24,11 @@ springdoc:
   swagger-ui:
     enabled: true
     path: /swagger-ui.html
+    operationsSorter: method
+    defaultModelsExpandDepth: 1
     display-request-duration: true
     tags-sorter: alpha
+    persistAuthorization: true
   enable-hateoas: false
   enable-data-rest: false
 

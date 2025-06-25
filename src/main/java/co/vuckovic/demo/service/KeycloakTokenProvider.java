@@ -16,6 +16,8 @@ public class KeycloakTokenProvider {
 
     private final KeycloakProperties props;
     private final WebClient.Builder webClientBuilder;
+
+    // cached for 5 minutes
     private volatile Mono<String> cachedToken;
 
     public Mono<String> getToken() {
@@ -31,24 +33,21 @@ public class KeycloakTokenProvider {
     }
 
     private Mono<String> fetchNewToken() {
-        var form = BodyInserters.fromFormData("grant_type", "password")
-                .with("client_id", props.masterClientId())
-                .with("username", props.adminUser())
-                .with("password", props.adminPassword());
-
         return webClientBuilder
                 .baseUrl(props.serverUrl())
                 .build()
                 .post()
-                .uri("/realms/{realm}/protocol/openid-connect/token", props.masterRealm())
+                .uri("/realms/{master}/protocol/openid-connect/token", props.masterRealm())
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .body(form)
+                .body(BodyInserters.fromFormData("grant_type", "password")
+                        .with("client_id", props.masterClientId())
+                        .with("username", props.adminUser())
+                        .with("password", props.adminPassword())
+                )
                 .retrieve()
                 .bodyToMono(TokenResponse.class)
                 .map(TokenResponse::access_token);
     }
-
-
 
     private static record TokenResponse(
             String access_token,
