@@ -58,8 +58,8 @@ A **reactive**, **WebFlux**-based Spring Boot application providing CRUD operati
 ### Clone & Build
 
 ```bash
-git clone https://github.com/your-org/demo-user-management.git
-cd demo-user-management
+git clone https://github.com/drago-vuckovic/sso.git
+cd sso
 mvn clean package -DskipTests
 ```
 
